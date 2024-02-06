@@ -59,10 +59,16 @@ data "aws_ecrpublic_authorization_token" "token" {
 }
 
 ## AMP
-module "prometheus" {
+module "prometheus_customer_prometheus" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
-  workspace_alias = format("%s-amp-onebyone", local.name)
+  workspace_alias = format("%s-amp-customer", local.name)
+}
+
+module "prometheus_aws_managed" {
+  source = "terraform-aws-modules/managed-service-prometheus/aws"
+
+  workspace_alias = format("%s-amp-aws", local.name)
 }
 
 ## VPC
