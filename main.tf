@@ -59,16 +59,16 @@ data "aws_ecrpublic_authorization_token" "token" {
 }
 
 ## AMP
-module "prometheus_customer_prometheus" {
+module "prometheus_customer_amp" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
-  workspace_alias = format("%s-amp-customer", local.name)
+  workspace_alias = format("%s-customer-amp", local.name)
 }
 
-module "prometheus_aws_managed" {
+module "prometheus_amp" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
-  workspace_alias = format("%s-amp-aws", local.name)
+  workspace_alias = format("%s-amp", local.name)
 }
 
 ## VPC
@@ -291,3 +291,74 @@ resource "helm_release" "aws_load_balancer_controller" {
   ]
 }
 
+## EKS / Kubecost Self
+resource "helm_release" "kubecost-self" {
+  namespace        = "kubecost-self"
+  create_namespace = true
+
+  name       = "cost-analyzer"
+  chart      = "cost-analyzer"
+  repository = "https://kubecost.github.io/cost-analyzer"
+  version    = "2.0.0"
+ 
+  values = [
+    file("${path.module}/helm-values/kubecost-self.yaml")
+  ]
+
+  set {
+    name  = "clusterName"
+    value = module.eks.cluster_name
+  }
+
+  depends_on = [
+		helm_release.karpenter
+  ]
+}
+
+## EKS / Kubecost Self AMP
+resource "helm_release" "kubecost-self-amp" {
+  namespace        = "kubecost-self-amp"
+  create_namespace = true
+
+  name       = "cost-analyzer"
+  chart      = "cost-analyzer"
+  repository = "https://kubecost.github.io/cost-analyzer"
+  version    = "2.0.0"
+ 
+  values = [
+    file("${path.module}/helm-values/kubecost-self-amp.yaml")
+  ]
+
+  set {
+    name  = "clusterName"
+    value = module.eks.cluster_name
+  }
+
+  depends_on = [
+		helm_release.karpenter
+  ]
+}
+
+## EKS / Kubecost AMP
+resource "helm_release" "kubecost-amp" {
+  namespace        = "kubecost-amp"
+  create_namespace = true
+
+  name       = "cost-analyzer"
+  chart      = "cost-analyzer"
+  repository = "https://kubecost.github.io/cost-analyzer"
+  version    = "2.0.0"
+ 
+  values = [
+    file("${path.module}/helm-values/kubecost-amp.yaml")
+  ]
+
+  set {
+    name  = "clusterName"
+    value = module.eks.cluster_name
+  }
+
+  depends_on = [
+		helm_release.karpenter
+  ]
+}
