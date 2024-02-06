@@ -157,24 +157,6 @@ module "eks" {
   }
 }
 
-#module "eks_aws_auth" {
-#  source = "terraform-aws-modules/eks/aws//modules/aws-auth"
-
-#  manage_aws_auth_configmap = true
-
-#  aws_auth_roles = [
-#    {
-#      ## for Karpenter
-#      rolearn  = module.karpenter.node_iam_role_arn
-#      username = "system:node:{{EC2PrivateDNSName}}"
-#      groups = [
-#        "system:bootstrappers",
-#        "system:nodes",
-#      ]
-#    }
-#  ]
-#}
-
 module "irsa_ebs_csi_plugin" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
