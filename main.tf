@@ -9,43 +9,98 @@ provider "aws" {
 }
 
 provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+  alias = "self"
+
+  host                   = module.eks_self.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_self.cluster_certificate_authority_data)
 
   exec {
     api_version = "client.authentication.k8s.io/v1beta1"
     command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+    args        = ["eks", "get-token", "--cluster-name", module.eks_self.cluster_name]
+  }
+}
+
+provider "kubernetes" {
+  alias = "self-amp"
+
+  host                   = module.eks_self_amp.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_self_amp.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_self_amp.cluster_name]
+  }
+}
+
+provider "kubernetes" {
+  alias = "amp"
+
+  host                   = module.eks_amp.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_amp.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_amp.cluster_name]
   }
 }
 
 provider "helm" {
+  alias = "self"
+
   # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
   repository_config_path = "${path.module}/.helm/repositories.yaml" 
   repository_cache       = "${path.module}/.helm"
 
   kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+    host                   = module.eks_self.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_self.cluster_certificate_authority_data)
 
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+      args        = ["eks", "get-token", "--cluster-name", module.eks_self.cluster_name]
     }
   }
 }
 
-provider "kubectl" {
-  apply_retry_count      = 5
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-  load_config_file       = false
+provider "helm" {
+  alias = "self-amp"
 
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name]
+  # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
+  repository_config_path = "${path.module}/.helm/repositories.yaml" 
+  repository_cache       = "${path.module}/.helm"
+
+  kubernetes {
+    host                   = module.eks_self_amp.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_self_amp.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks_self_amp.cluster_name]
+    }
+  }
+}
+
+provider "helm" {
+  alias = "amp"
+
+  # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
+  repository_config_path = "${path.module}/.helm/repositories.yaml" 
+  repository_cache       = "${path.module}/.helm"
+
+  kubernetes {
+    host                   = module.eks_amp.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_amp.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks_amp.cluster_name]
+    }
   }
 }
 
@@ -95,16 +150,15 @@ module "vpc" {
   }
 
   private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1                               # for AWS Load Balancer Controller
-    "karpenter.sh/discovery"          = format("%s-eks", local.name) # for Karpenter
+    "kubernetes.io/role/internal-elb" = 1 # for AWS Load Balancer Controller
   }
 }
 
-## EKS 
-module "eks" {
+## EKS Self
+module "eks_self" {
   source = "terraform-aws-modules/eks/aws"
 
-  cluster_name = format("%s-eks", local.name)
+  cluster_name = format("%s-eks-self", local.name)
   cluster_version = "1.28"
 
   vpc_id                          = module.vpc.vpc_id
@@ -112,6 +166,20 @@ module "eks" {
   cluster_endpoint_public_access  = true
 
   enable_cluster_creator_admin_permissions = true
+
+  ## Managed Nodegroups
+  eks_managed_node_groups = {
+    default = {
+      min_size     = 3
+      max_size     = 3
+      desired_size = 3
+
+      instance_types = ["m5.xlarge"]
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+    }
+  }
 
   ## Addons
   cluster_addons = {
@@ -127,24 +195,12 @@ module "eks" {
     }
     aws-ebs-csi-driver = {
       addon_version = "v1.25.0-eksbuild.1"
-      service_account_role_arn = module.irsa_ebs_csi_plugin.iam_role_arn
+      service_account_role_arn = module.irsa_self_ebs_csi_plugin.iam_role_arn
       configuration_values = file("${path.module}/eks-addon-configs/ebs-csi.json")
     }
   }
 
-  ## Fargate
-  fargate_profiles = {
-    karpenter = {
-      selectors = [
-        { namespace = "karpenter" }
-      ]
-    }
-  }
-
   ## Node Security Group
-  node_security_group_tags = {
-    "karpenter.sh/discovery" = format("%s-eks", local.name) # for Karpenter
-  }
   node_security_group_additional_rules = {
     ingress_self_all = {
       description = "Node to node all ports/protocols"
@@ -157,7 +213,7 @@ module "eks" {
   }
 }
 
-module "irsa_ebs_csi_plugin" {
+module "irsa_self_ebs_csi_plugin" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name             = format("%s-irsa-ebs-csi-plugin", local.name)
@@ -165,89 +221,14 @@ module "irsa_ebs_csi_plugin" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks_self.oidc_provider_arn
       namespace_service_accounts = ["kube-system:ebs-csi-controller-sa", "kube-system:ebs-csi-node-sa"]
     }
   }
 }
 
-## EKS / Karpenter
-module "karpenter" {
-  source = "terraform-aws-modules/eks/aws//modules/karpenter"
-
-  cluster_name           = module.eks.cluster_name
-  irsa_oidc_provider_arn = module.eks.oidc_provider_arn
-
-  create_instance_profile = false
-  enable_irsa             = true
-
-  node_iam_role_additional_policies = {
-    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-  }
-}
-
-resource "helm_release" "karpenter" {
-  namespace        = "karpenter"
-  create_namespace = true
-
-  name       = "karpenter"
-  chart      = "karpenter"
-  repository = "oci://public.ecr.aws/karpenter"
-  version    = "v0.32.5"
-
-  set {
-    name  = "settings.aws.clusterName"
-    value = module.eks.cluster_name
-  }
-  set {
-    name  = "settings.aws.clusterEndpoint"
-    value = module.eks.cluster_endpoint
-  }
-  set {
-    name  = "settings.aws.interruptionQueueName"
-    value = module.karpenter.queue_name
-  }
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.karpenter.iam_role_arn
-  }
-
-  depends_on = [
-    module.karpenter
-  ]
-}
-
-resource "kubectl_manifest" "karpenter_nodepool_core" {
-  yaml_body = file("${path.module}/manifests/karpenter-nodepool-core.yaml")
-
-  depends_on = [
-    helm_release.karpenter
-  ]
-}
-
-resource "kubectl_manifest" "karpenter_nodepool_default" {
-  yaml_body = file("${path.module}/manifests/karpenter-nodepool-default.yaml")
-
-  depends_on = [
-    helm_release.karpenter
-  ]
-}
-
-resource "kubectl_manifest" "karpenter_ec2nodeclass_default" {
-  yaml_body = templatefile("${path.module}/manifests/karpenter-nodeclass-default.yaml", 
-    { 
-      cluster_name = module.eks.cluster_name
-      ec2_role_name = module.karpenter.node_iam_role_name
-    }
-  )
-
-  depends_on = [
-    helm_release.karpenter
-  ]
-}
-
-## EKS / Load Balancer Controller
-module "irsa_load_balancer_controller" {
+## EKS Self / Load Balancer Controller
+module "irsa_self_load_balancer_controller" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
   role_name                              = format("%s-irsa-aws-load-balancer-controller", local.name)
@@ -255,44 +236,35 @@ module "irsa_load_balancer_controller" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks_self.oidc_provider_arn
       namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
     }
   }
 }
 
-resource "helm_release" "aws_load_balancer_controller" {
+resource "helm_release" "self_aws_load_balancer_controller" {
   namespace  = "kube-system"
   name       = "aws-load-balancer-controller"
   chart      = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
   version    = "v1.6.2"
- 
-  values = [
-    file("${path.module}/helm-values/aws-load-balancer-controller.yaml")
-  ]
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
-  }
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
+    value = module.eks_self.cluster_name
   }
   set {
     name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.irsa_load_balancer_controller.iam_role_arn
+    value = module.irsa_self_load_balancer_controller.iam_role_arn
   }
 
   depends_on = [
-    module.irsa_load_balancer_controller,
-		helm_release.karpenter
+    module.irsa_self_load_balancer_controller,
   ]
 }
 
-## EKS / Kubecost Self
-resource "helm_release" "kubecost-self" {
+## EKS Self / Kubecost 
+resource "helm_release" "kubecost_self" {
   namespace        = "kubecost-self"
   create_namespace = true
 
@@ -307,15 +279,120 @@ resource "helm_release" "kubecost-self" {
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = module.eks_self.cluster_name
+  }
+}
+
+## EKS Self AMP
+module "eks_self_amp" {
+  source = "terraform-aws-modules/eks/aws"
+
+  cluster_name = format("%s-eks-self-amp", local.name)
+  cluster_version = "1.28"
+
+  vpc_id                          = module.vpc.vpc_id
+  subnet_ids                      = module.vpc.private_subnets
+  cluster_endpoint_public_access  = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  ## Managed Nodegroups
+  eks_managed_node_groups = {
+    default = {
+      min_size     = 3
+      max_size     = 3
+      desired_size = 3
+
+      instance_types = ["m5.xlarge"]
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+    }
+  }
+
+  ## Addons
+  cluster_addons = {
+    coredns = {
+      addon_version = "v1.10.1-eksbuild.5"
+      configuration_values = file("${path.module}/eks-addon-configs/coredns.json")
+    }
+    vpc-cni = {
+      addon_version = "v1.14.1-eksbuild.1"
+    }
+    kube-proxy = {
+      addon_version = "v1.28.1-eksbuild.1"
+    }
+    aws-ebs-csi-driver = {
+      addon_version = "v1.25.0-eksbuild.1"
+      service_account_role_arn = module.irsa_self_amp_ebs_csi_plugin.iam_role_arn
+      configuration_values = file("${path.module}/eks-addon-configs/ebs-csi.json")
+    }
+  }
+
+  ## Node Security Group
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node to node all ports/protocols"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "ingress"
+      self        = true
+    }
+  }
+}
+
+module "irsa_self_amp_ebs_csi_plugin" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name             = format("%s-irsa-ebs-csi-plugin", local.name)
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_self_amp.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa", "kube-system:ebs-csi-node-sa"]
+    }
+  }
+}
+
+## EKS Self AMP / Load Balancer Controller
+module "irsa_self_amp_load_balancer_controller" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                              = format("%s-irsa-aws-load-balancer-controller", local.name)
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_self_amp.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "helm_release" "self_amp_aws_load_balancer_controller" {
+  namespace  = "kube-system"
+  name       = "aws-load-balancer-controller"
+  chart      = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  version    = "v1.6.2"
+
+  set {
+    name  = "clusterName"
+    value = module.eks_self_amp.cluster_name
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_self_amp_load_balancer_controller.iam_role_arn
   }
 
   depends_on = [
-		helm_release.karpenter
+    module.irsa_self_amp_load_balancer_controller,
   ]
 }
 
-## EKS / Kubecost Self AMP
+## EKS Self AMP / Kubecost
 module "irsa_self_amp_kubecost" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
@@ -324,11 +401,12 @@ module "irsa_self_amp_kubecost" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks_self_amp.oidc_provider_arn
       namespace_service_accounts = ["kubecost-self-amp:cost-analyzer"]
     }
   }
 }
+
 
 module "irsa_self_amp_prometheus" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
@@ -338,13 +416,13 @@ module "irsa_self_amp_prometheus" {
 
   oidc_providers = {
     main = {
-      provider_arn               = module.eks.oidc_provider_arn
+      provider_arn               = module.eks_self_amp.oidc_provider_arn
       namespace_service_accounts = ["kubecost-self-amp:cost-analyzer-prometheus-server"]
     }
   }
 }
 
-resource "helm_release" "kubecost-self-amp" {
+resource "helm_release" "kubecost_self_amp" {
   namespace        = "kubecost-self-amp"
   create_namespace = true
 
@@ -359,7 +437,7 @@ resource "helm_release" "kubecost-self-amp" {
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = module.eks_self_amp.cluster_name
   }
   set {
     name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
@@ -377,14 +455,119 @@ resource "helm_release" "kubecost-self-amp" {
     name  = "global.amp.remoteWriteService"
     value = module.prometheus_self_amp.workspace_prometheus_endpoint
   }
+}
+
+## EKS AMP
+module "eks_amp" {
+  source = "terraform-aws-modules/eks/aws"
+
+  cluster_name = format("%s-eks-amp", local.name)
+  cluster_version = "1.28"
+
+  vpc_id                          = module.vpc.vpc_id
+  subnet_ids                      = module.vpc.private_subnets
+  cluster_endpoint_public_access  = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  ## Managed Nodegroups
+  eks_managed_node_groups = {
+    default = {
+      min_size     = 3
+      max_size     = 3
+      desired_size = 3
+
+      instance_types = ["m5.xlarge"]
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+    }
+  }
+
+  ## Addons
+  cluster_addons = {
+    coredns = {
+      addon_version = "v1.10.1-eksbuild.5"
+      configuration_values = file("${path.module}/eks-addon-configs/coredns.json")
+    }
+    vpc-cni = {
+      addon_version = "v1.14.1-eksbuild.1"
+    }
+    kube-proxy = {
+      addon_version = "v1.28.1-eksbuild.1"
+    }
+    aws-ebs-csi-driver = {
+      addon_version = "v1.25.0-eksbuild.1"
+      service_account_role_arn = module.irsa_amp_ebs_csi_plugin.iam_role_arn
+      configuration_values = file("${path.module}/eks-addon-configs/ebs-csi.json")
+    }
+  }
+
+  ## Node Security Group
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node to node all ports/protocols"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "ingress"
+      self        = true
+    }
+  }
+}
+
+module "irsa_amp_ebs_csi_plugin" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name             = format("%s-irsa-ebs-csi-plugin", local.name)
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_amp.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa", "kube-system:ebs-csi-node-sa"]
+    }
+  }
+}
+
+## EKS AMP / Load Balancer Controller
+module "irsa_amp_load_balancer_controller" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                              = format("%s-irsa-aws-load-balancer-controller", local.name)
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_amp.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "helm_release" "amp_aws_load_balancer_controller" {
+  namespace  = "kube-system"
+  name       = "aws-load-balancer-controller"
+  chart      = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  version    = "v1.6.2"
+
+  set {
+    name  = "clusterName"
+    value = module.eks_amp.cluster_name
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_amp_load_balancer_controller.iam_role_arn
+  }
 
   depends_on = [
-		helm_release.karpenter
+    module.irsa_amp_load_balancer_controller,
   ]
 }
 
-## EKS / Kubecost AMP
-resource "helm_release" "kubecost-amp" {
+## EKS AMP / Kubecost
+resource "helm_release" "kubecost_amp" {
   namespace        = "kubecost-amp"
   create_namespace = true
 
@@ -399,10 +582,6 @@ resource "helm_release" "kubecost-amp" {
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = module.eks_amp.cluster_name
   }
-
-  depends_on = [
-		helm_release.karpenter
-  ]
 }
