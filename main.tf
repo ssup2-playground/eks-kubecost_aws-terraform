@@ -59,10 +59,10 @@ data "aws_ecrpublic_authorization_token" "token" {
 }
 
 ## AMP
-module "prometheus_customer_amp" {
+module "prometheus_self_amp" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
-  workspace_alias = format("%s-customer-amp", local.name)
+  workspace_alias = format("%s-self-amp", local.name)
 }
 
 module "prometheus_amp" {
@@ -256,7 +256,7 @@ module "irsa_load_balancer_controller" {
   oidc_providers = {
     main = {
       provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa", "kube-system:ebs-csi-node-sa"]
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
     }
   }
 }
@@ -299,7 +299,7 @@ resource "helm_release" "kubecost-self" {
   name       = "cost-analyzer"
   chart      = "cost-analyzer"
   repository = "https://kubecost.github.io/cost-analyzer"
-  version    = "2.0.0"
+  version    = "1.108.0"
  
   values = [
     file("${path.module}/helm-values/kubecost-self.yaml")
@@ -316,6 +316,34 @@ resource "helm_release" "kubecost-self" {
 }
 
 ## EKS / Kubecost Self AMP
+module "irsa_self_amp_kubecost" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                                       = format("%s-self-amp-kubecost", local.name)
+  attach_amazon_managed_service_prometheus_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kubecost-self-amp:cost-analyzer"]
+    }
+  }
+}
+
+module "irsa_self_amp_prometheus" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                                       = format("%s-self-amp-prometheus", local.name)
+  attach_amazon_managed_service_prometheus_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kubecost-self-amp:cost-analyzer-prometheus-server"]
+    }
+  }
+}
+
 resource "helm_release" "kubecost-self-amp" {
   namespace        = "kubecost-self-amp"
   create_namespace = true
@@ -323,7 +351,7 @@ resource "helm_release" "kubecost-self-amp" {
   name       = "cost-analyzer"
   chart      = "cost-analyzer"
   repository = "https://kubecost.github.io/cost-analyzer"
-  version    = "2.0.0"
+  version    = "1.108.0"
  
   values = [
     file("${path.module}/helm-values/kubecost-self-amp.yaml")
@@ -332,6 +360,22 @@ resource "helm_release" "kubecost-self-amp" {
   set {
     name  = "clusterName"
     value = module.eks.cluster_name
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_self_amp_kubecost.iam_role_arn
+  }
+  set {
+    name  = "prometheus.serviceAccounts.server.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_self_amp_prometheus.iam_role_arn
+  }
+  set {
+    name  = "global.amp.prometheusServerEndpoint"
+    value = format("http://localhost:8005/workspaces/%s/", module.prometheus_self_amp.workspace_id)
+  }
+  set {
+    name  = "global.amp.remoteWriteService"
+    value = module.prometheus_self_amp.workspace_prometheus_endpoint
   }
 
   depends_on = [
@@ -347,7 +391,7 @@ resource "helm_release" "kubecost-amp" {
   name       = "cost-analyzer"
   chart      = "cost-analyzer"
   repository = "https://kubecost.github.io/cost-analyzer"
-  version    = "2.0.0"
+  version    = "1.108.0"
  
   values = [
     file("${path.module}/helm-values/kubecost-amp.yaml")
