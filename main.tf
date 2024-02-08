@@ -532,6 +532,34 @@ resource "helm_release" "amp_aws_load_balancer_controller" {
 }
 
 ## EKS AMP / Kubecost
+module "irsa_amp_kubecost" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                                       = format("%s-amp-kubecost", local.name)
+  attach_amazon_managed_service_prometheus_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_amp.oidc_provider_arn
+      namespace_service_accounts = ["kubecost:cost-analyzer"]
+    }
+  }
+}
+
+module "irsa_amp_prometheus" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                                       = format("%s-amp-prometheus", local.name)
+  attach_amazon_managed_service_prometheus_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_amp.oidc_provider_arn
+      namespace_service_accounts = ["kubecost:cost-analyzer-prometheus-server"]
+    }
+  }
+}
+
 resource "helm_release" "kubecost_amp" {
   provider = helm.amp
 
@@ -550,5 +578,17 @@ resource "helm_release" "kubecost_amp" {
   set {
     name  = "clusterName"
     value = module.eks_amp.cluster_name
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_amp_kubecost.iam_role_arn
+  }
+  set {
+    name  = "prometheus.serviceAccounts.server.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_amp_prometheus.iam_role_arn
+  }
+  set {
+    name  = "global.amp.prometheusServerEndpoint"
+    value = format("http://localhost:8005/workspaces/%s/", module.prometheus_amp.workspace_id)
   }
 }

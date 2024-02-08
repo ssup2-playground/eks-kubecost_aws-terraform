@@ -1,3 +1,16 @@
+global:
+  prometheus:
+    enabled: false
+
+  amp:
+    enabled: true
+    sigv4:
+      region: "ap-northeast-2"
+
+sigV4Proxy:
+  region: "ap-northeast-2"
+  host: aps-workspaces.ap-northeast-2.amazonaws.com
+
 service:
   type: LoadBalancer
   annotations:
