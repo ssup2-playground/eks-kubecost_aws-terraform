@@ -1,0 +1,20 @@
+global:
+  prometheus:
+    enabled: false
+
+  amp:
+    enabled: true
+    sigv4:
+      region: "ap-northeast-2"
+
+sigV4Proxy:
+  region: "ap-northeast-2"
+  host: aps-workspaces.ap-northeast-2.amazonaws.com
+
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+
