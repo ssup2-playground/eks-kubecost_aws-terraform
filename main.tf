@@ -8,45 +8,6 @@ provider "aws" {
   region = "us-east-1"
 }
 
-provider "kubernetes" {
-  alias = "self"
-
-  host                   = module.eks_self.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks_self.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks_self.cluster_name]
-  }
-}
-
-provider "kubernetes" {
-  alias = "self-amp"
-
-  host                   = module.eks_self_amp.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks_self_amp.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks_self_amp.cluster_name]
-  }
-}
-
-provider "kubernetes" {
-  alias = "amp"
-
-  host                   = module.eks_amp.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks_amp.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks_amp.cluster_name]
-  }
-}
-
 provider "helm" {
   alias = "self"
 
@@ -185,7 +146,6 @@ module "eks_self" {
   cluster_addons = {
     coredns = {
       addon_version = "v1.10.1-eksbuild.5"
-      configuration_values = file("${path.module}/eks-addon-configs/coredns.json")
     }
     vpc-cni = {
       addon_version = "v1.14.1-eksbuild.1"
@@ -196,7 +156,6 @@ module "eks_self" {
     aws-ebs-csi-driver = {
       addon_version = "v1.25.0-eksbuild.1"
       service_account_role_arn = module.irsa_self_ebs_csi_plugin.iam_role_arn
-      configuration_values = file("${path.module}/eks-addon-configs/ebs-csi.json")
     }
   }
 
@@ -216,7 +175,7 @@ module "eks_self" {
 module "irsa_self_ebs_csi_plugin" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name             = format("%s-irsa-ebs-csi-plugin", local.name)
+  role_name             = format("%s-irsa-self-ebs-csi-plugin", local.name)
   attach_ebs_csi_policy = true
 
   oidc_providers = {
@@ -231,7 +190,7 @@ module "irsa_self_ebs_csi_plugin" {
 module "irsa_self_load_balancer_controller" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name                              = format("%s-irsa-aws-load-balancer-controller", local.name)
+  role_name                              = format("%s-irsa-self-aws-load-balancer-controller", local.name)
   attach_load_balancer_controller_policy = true
 
   oidc_providers = {
@@ -243,6 +202,8 @@ module "irsa_self_load_balancer_controller" {
 }
 
 resource "helm_release" "self_aws_load_balancer_controller" {
+  provider = helm.self
+
   namespace  = "kube-system"
   name       = "aws-load-balancer-controller"
   chart      = "aws-load-balancer-controller"
@@ -265,7 +226,9 @@ resource "helm_release" "self_aws_load_balancer_controller" {
 
 ## EKS Self / Kubecost 
 resource "helm_release" "kubecost_self" {
-  namespace        = "kubecost-self"
+  provider = helm.self
+
+  namespace        = "kubecost"
   create_namespace = true
 
   name       = "cost-analyzer"
@@ -314,7 +277,6 @@ module "eks_self_amp" {
   cluster_addons = {
     coredns = {
       addon_version = "v1.10.1-eksbuild.5"
-      configuration_values = file("${path.module}/eks-addon-configs/coredns.json")
     }
     vpc-cni = {
       addon_version = "v1.14.1-eksbuild.1"
@@ -325,7 +287,6 @@ module "eks_self_amp" {
     aws-ebs-csi-driver = {
       addon_version = "v1.25.0-eksbuild.1"
       service_account_role_arn = module.irsa_self_amp_ebs_csi_plugin.iam_role_arn
-      configuration_values = file("${path.module}/eks-addon-configs/ebs-csi.json")
     }
   }
 
@@ -345,7 +306,7 @@ module "eks_self_amp" {
 module "irsa_self_amp_ebs_csi_plugin" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name             = format("%s-irsa-ebs-csi-plugin", local.name)
+  role_name             = format("%s-irsa-self-amp-ebs-csi-plugin", local.name)
   attach_ebs_csi_policy = true
 
   oidc_providers = {
@@ -360,7 +321,7 @@ module "irsa_self_amp_ebs_csi_plugin" {
 module "irsa_self_amp_load_balancer_controller" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name                              = format("%s-irsa-aws-load-balancer-controller", local.name)
+  role_name                              = format("%s-irsa-self-amp-aws-load-balancer-controller", local.name)
   attach_load_balancer_controller_policy = true
 
   oidc_providers = {
@@ -372,6 +333,8 @@ module "irsa_self_amp_load_balancer_controller" {
 }
 
 resource "helm_release" "self_amp_aws_load_balancer_controller" {
+  provider = helm.self-amp
+
   namespace  = "kube-system"
   name       = "aws-load-balancer-controller"
   chart      = "aws-load-balancer-controller"
@@ -402,7 +365,7 @@ module "irsa_self_amp_kubecost" {
   oidc_providers = {
     main = {
       provider_arn               = module.eks_self_amp.oidc_provider_arn
-      namespace_service_accounts = ["kubecost-self-amp:cost-analyzer"]
+      namespace_service_accounts = ["kubecost:cost-analyzer"]
     }
   }
 }
@@ -417,13 +380,15 @@ module "irsa_self_amp_prometheus" {
   oidc_providers = {
     main = {
       provider_arn               = module.eks_self_amp.oidc_provider_arn
-      namespace_service_accounts = ["kubecost-self-amp:cost-analyzer-prometheus-server"]
+      namespace_service_accounts = ["kubecost:cost-analyzer-prometheus-server"]
     }
   }
 }
 
 resource "helm_release" "kubecost_self_amp" {
-  namespace        = "kubecost-self-amp"
+  provider = helm.self-amp
+
+  namespace        = "kubecost"
   create_namespace = true
 
   name       = "cost-analyzer"
@@ -453,7 +418,7 @@ resource "helm_release" "kubecost_self_amp" {
   }
   set {
     name  = "global.amp.remoteWriteService"
-    value = module.prometheus_self_amp.workspace_prometheus_endpoint
+    value = format("%sapi/v1/remote_write", module.prometheus_self_amp.workspace_prometheus_endpoint)
   }
 }
 
@@ -488,7 +453,6 @@ module "eks_amp" {
   cluster_addons = {
     coredns = {
       addon_version = "v1.10.1-eksbuild.5"
-      configuration_values = file("${path.module}/eks-addon-configs/coredns.json")
     }
     vpc-cni = {
       addon_version = "v1.14.1-eksbuild.1"
@@ -499,7 +463,6 @@ module "eks_amp" {
     aws-ebs-csi-driver = {
       addon_version = "v1.25.0-eksbuild.1"
       service_account_role_arn = module.irsa_amp_ebs_csi_plugin.iam_role_arn
-      configuration_values = file("${path.module}/eks-addon-configs/ebs-csi.json")
     }
   }
 
@@ -519,7 +482,7 @@ module "eks_amp" {
 module "irsa_amp_ebs_csi_plugin" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name             = format("%s-irsa-ebs-csi-plugin", local.name)
+  role_name             = format("%s-irsa-amp-ebs-csi-plugin", local.name)
   attach_ebs_csi_policy = true
 
   oidc_providers = {
@@ -534,7 +497,7 @@ module "irsa_amp_ebs_csi_plugin" {
 module "irsa_amp_load_balancer_controller" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
-  role_name                              = format("%s-irsa-aws-load-balancer-controller", local.name)
+  role_name                              = format("%s-irsa-amp-aws-load-balancer-controller", local.name)
   attach_load_balancer_controller_policy = true
 
   oidc_providers = {
@@ -546,6 +509,8 @@ module "irsa_amp_load_balancer_controller" {
 }
 
 resource "helm_release" "amp_aws_load_balancer_controller" {
+  provider = helm.amp
+
   namespace  = "kube-system"
   name       = "aws-load-balancer-controller"
   chart      = "aws-load-balancer-controller"
@@ -568,7 +533,9 @@ resource "helm_release" "amp_aws_load_balancer_controller" {
 
 ## EKS AMP / Kubecost
 resource "helm_release" "kubecost_amp" {
-  namespace        = "kubecost-amp"
+  provider = helm.amp
+
+  namespace        = "kubecost"
   create_namespace = true
 
   name       = "cost-analyzer"
