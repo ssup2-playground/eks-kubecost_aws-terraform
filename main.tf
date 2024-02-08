@@ -1,4 +1,3 @@
-# Provider
 provider "aws" {
   region = local.region
 }
@@ -6,6 +5,19 @@ provider "aws" {
 provider "aws" {
   alias  = "ecr"
   region = "us-east-1"
+}
+
+provider "kubernetes" {
+  alias = "amp"
+
+  host                   = module.eks_amp.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_amp.cluster_certificate_authority_data)
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_amp.cluster_name]
+  }
 }
 
 provider "helm" {
@@ -62,6 +74,21 @@ provider "helm" {
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", module.eks_amp.cluster_name]
     }
+  }
+}
+
+provider "kubectl" {
+  alias = "amp"
+
+  apply_retry_count      = 5
+  host                   = module.eks_amp.cluster_endpoint
+  cluster_ca_certificate = base64decode(module.eks_amp.cluster_certificate_authority_data)
+  load_config_file       = false
+
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", module.eks_amp.cluster_name]
   }
 }
 
@@ -479,6 +506,20 @@ module "eks_amp" {
   }
 }
 
+module "eks-aws-auth" {
+  provider = kubernetes.amp
+
+  source  = "terraform-aws-modules/eks/aws//modules/aws-auth"
+
+  aws_auth_roles = [
+    {
+      rolearn  = format("arn:aws:iam::%s:role/AWSServiceRoleForAmazonPrometheusScraper_%s", data.aws_caller_identity.current.account_id, substr(module.prometheus_amp.role_arn
+      , -15, -1))
+      username = "aps-collector-user"
+    }
+  ]
+}
+
 module "irsa_amp_ebs_csi_plugin" {
   source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
 
@@ -592,3 +633,81 @@ resource "helm_release" "kubecost_amp" {
     value = format("http://localhost:8005/workspaces/%s/", module.prometheus_amp.workspace_id)
   }
 }
+
+resource "aws_prometheus_scraper" "example" {
+  source {
+    eks {
+      cluster_arn = module.eks_amp.cluster_arn
+      subnet_ids  = module.vpc.private_subnets
+    }
+  }
+
+  destination {
+    amp {
+      workspace_arn = module.prometheus_amp.workspace_arn
+    }
+  }
+
+  scrape_configuration = <<EOT
+global:
+   scrape_interval: 30s
+scrape_configs:
+  - job_name: pod_exporter
+    kubernetes_sd_configs:
+      - role: pod
+  - job_name: cadvisor
+    scheme: https
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+  # apiserver metrics
+  - scheme: https
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    job_name: kubernetes-apiservers
+    kubernetes_sd_configs:
+    - role: endpoints
+    relabel_configs:
+    - action: keep
+      regex: default;kubernetes;https
+      source_labels:
+      - __meta_kubernetes_namespace
+      - __meta_kubernetes_service_name
+      - __meta_kubernetes_endpoint_port_name
+  # kube proxy metrics
+  - job_name: kube-proxy
+    honor_labels: true
+    kubernetes_sd_configs:
+    - role: pod
+    relabel_configs:
+    - action: keep
+      source_labels:
+      - __meta_kubernetes_namespace
+      - __meta_kubernetes_pod_name
+      separator: '/'
+      regex: 'kube-system/kube-proxy.+'
+    - source_labels:
+      - __address__
+      action: replace
+      target_label: __address__
+      regex: (.+?)(\\:\\d+)?
+      replacement: $1:10249
+EOT
+}
+
+resource "kubectl_manifest" "amp_amp_scrapper_role" {
+  provider = kubectl.amp
+
+  yaml_body = file("${path.module}/manifests/amp-scrapper-role.yaml")
+}
+
