@@ -716,6 +716,18 @@ module "irsa_adot_amp_adot_collector_amp" {
 #  yaml_body = each.value
 #}
 
+resource "helm_release" "adot_amp_node_exporter" {
+  provider = helm.adot-amp
+
+  namespace        = "kubecost"
+  create_namespace = true
+
+  name       = "prometheus-node-exporter"
+  chart      = "prometheus-node-exporter"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  version    = "4.29.0"
+}
+
 ## EKS AMP
 module "eks_amp" {
   source = "terraform-aws-modules/eks/aws"
@@ -919,57 +931,113 @@ resource "aws_prometheus_scraper" "amp_scraper" {
   scrape_configuration = <<EOT
 global:
   scrape_interval: 30s
+  scrape_timeout: 10s
 scrape_configs:
-  - job_name: pod_exporter
-    kubernetes_sd_configs:
-      - role: pod
-  - job_name: cadvisor
-    scheme: https
-    authorization:
-      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-    kubernetes_sd_configs:
-      - role: node
-    relabel_configs:
-      - action: labelmap
-        regex: __meta_kubernetes_node_label_(.+)
-      - replacement: kubernetes.default.svc:443
-        target_label: __address__
-      - source_labels: [__meta_kubernetes_node_name]
-        regex: (.+)
-        target_label: __metrics_path__
-        replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
-  # apiserver metrics
-  - scheme: https
-    authorization:
-      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-    job_name: kubernetes-apiservers
-    kubernetes_sd_configs:
-    - role: endpoints
-    relabel_configs:
-    - action: keep
-      regex: default;kubernetes;https
-      source_labels:
-      - __meta_kubernetes_namespace
-      - __meta_kubernetes_service_name
-      - __meta_kubernetes_endpoint_port_name
-  # kube proxy metrics
-  - job_name: kube-proxy
-    honor_labels: true
-    kubernetes_sd_configs:
-    - role: pod
-    relabel_configs:
-    - action: keep
-      source_labels:
-      - __meta_kubernetes_namespace
-      - __meta_kubernetes_pod_name
-      separator: '/'
-      regex: 'kube-system/kube-proxy.+'
-    - source_labels:
-      - __address__
-      action: replace
-      target_label: __address__
-      regex: (.+?)(\\:\\d+)?
-      replacement: $1:10249
+- job_name: 'kubernetes-apiservers'
+  scheme: https
+  kubernetes_sd_configs:
+  - role: endpoints
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+    action: keep
+    regex: default;kubernetes;https
+- job_name: 'kubernetes-nodes'
+  scheme: https
+  kubernetes_sd_configs:
+  - role: node
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/$1/proxy/metrics
+- job_name: 'kubernetes-nodes-cadvisor'
+  scheme: https
+  kubernetes_sd_configs:
+  - role: node
+  tls_config:
+    ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    insecure_skip_verify: true
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+  relabel_configs:
+  - action: labelmap
+    regex: __meta_kubernetes_node_label_(.+)
+  - target_label: __address__
+    replacement: kubernetes.default.svc:443
+  - source_labels: [__meta_kubernetes_node_name]
+    regex: (.+)
+    target_label: __metrics_path__
+    replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+- job_name: 'kubernetes-service-endpoints'
+  honor_labels: true
+  kubernetes_sd_configs:
+  - role: endpoints
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+    action: keep
+    regex: true
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape_slow]
+    action: drop
+    regex: true
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+    action: replace
+    target_label: __scheme__
+    regex: (https?)
+  - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+    action: replace
+    target_label: __metrics_path__
+    regex: (.+)
+  - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+    action: replace
+    target_label: __address__
+    regex: (.+?)(?::\d+)?;(\d+)
+    replacement: $1:$2
+  - action: labelmap
+    regex: __meta_kubernetes_service_annotation_prometheus_io_param_(.+)
+    replacement: __param_$1
+  - action: labelmap
+    regex: __meta_kubernetes_service_label_(.+)
+  - source_labels: [__meta_kubernetes_namespace]
+    action: replace
+    target_label: namespace
+  - source_labels: [__meta_kubernetes_service_name]
+    action: replace
+    target_label: service
+  - source_labels: [__meta_kubernetes_pod_node_name]
+    action: replace
+    target_label: node
+- job_name: 'kubecost'
+  honor_labels: true
+  scrape_interval: 1m
+  scrape_timeout: 60s
+  metrics_path: /metrics
+  scheme: http
+  dns_sd_configs:
+  - names:
+    - cost-analyzer-cost-analyzer
+    type: 'A'
+    port: 9003
+- job_name: 'kubecost-networking'
+  kubernetes_sd_configs:
+  - role: pod
+  relabel_configs:
+  - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+    action: keep
+    regex:  kubecost
+  - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+    action: keep
+    regex:  network-costs
 EOT
 }
 
