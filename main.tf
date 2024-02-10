@@ -196,6 +196,51 @@ module "prometheus_adot_amp" {
 module "prometheus_amp" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
+  rule_group_namespaces = {
+    CPU = {
+      name = "CPU"
+      data = <<-EOT
+      groups:
+      - name: CPU
+        rules:
+        - expr: sum(rate(container_cpu_usage_seconds_total{container!=""}[5m]))
+          record: cluster:cpu_usage:rate5m
+        - expr: rate(container_cpu_usage_seconds_total{container!=""}[5m])
+          record: cluster:cpu_usage_nosum:rate5m
+        - expr: avg(irate(container_cpu_usage_seconds_total{container!="POD", container!=""}[5m])) by (container,pod,namespace)
+          record: kubecost_container_cpu_usage_irate
+        - expr: sum(container_memory_working_set_bytes{container!="POD",container!=""}) by (container,pod,namespace)
+          record: kubecost_container_memory_working_set_bytes
+        - expr: sum(container_memory_working_set_bytes{container!="POD",container!=""})
+          record: kubecost_cluster_memory_working_set_bytes
+      EOT
+    }
+    Savings = {
+      name = "Savings"
+      data = <<-EOT
+      groups:
+      - name: Savings
+        rules:
+        - expr: sum(avg(kube_pod_owner{owner_kind!="DaemonSet"}) by (pod) * sum(container_cpu_allocation) by (pod))
+          record: kubecost_savings_cpu_allocation
+          labels:
+            daemonset: "false"
+        - expr: sum(avg(kube_pod_owner{owner_kind="DaemonSet"}) by (pod) * sum(container_cpu_allocation) by (pod)) / sum(kube_node_info)
+          record: kubecost_savings_cpu_allocation
+          labels:
+            daemonset: "true"
+        - expr: sum(avg(kube_pod_owner{owner_kind!="DaemonSet"}) by (pod) * sum(container_memory_allocation_bytes) by (pod))
+          record: kubecost_savings_memory_allocation_bytes
+          labels:
+            daemonset: "false"
+        - expr: sum(avg(kube_pod_owner{owner_kind="DaemonSet"}) by (pod) * sum(container_memory_allocation_bytes) by (pod)) / sum(kube_node_info)
+          record: kubecost_savings_memory_allocation_bytes
+          labels:
+            daemonset: "true"
+      EOT
+    }
+  }
+
   workspace_alias = format("%s-amp", local.name)
 }
 
@@ -1096,3 +1141,14 @@ resource "kubectl_manifest" "amp_amp_scrapper_role" {
   yaml_body = file("${path.module}/manifests/amp-scrapper-role.yaml")
 }
 
+resource "helm_release" "amp_node_exporter" {
+  provider = helm.amp
+
+  namespace        = "kubecost"
+  create_namespace = true
+
+  name       = "prometheus-node-exporter"
+  chart      = "prometheus-node-exporter"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  version    = "4.29.0"
+}
