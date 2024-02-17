@@ -40,20 +40,39 @@ provider "helm" {
 }
 
 provider "helm" {
-  alias = "adot-amp"
+  alias = "promcost"
 
   # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
   repository_config_path = "${path.module}/.helm/repositories.yaml" 
   repository_cache       = "${path.module}/.helm"
 
   kubernetes {
-    host                   = module.eks_adot_amp.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks_adot_amp.cluster_certificate_authority_data)
+    host                   = module.eks_prom_ampcost.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_prom_ampcost.cluster_certificate_authority_data)
 
     exec {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks_adot_amp.cluster_name]
+      args        = ["eks", "get-token", "--cluster-name", module.eks_prom_ampcost.cluster_name]
+    }
+  }
+}
+
+provider "helm" {
+  alias = "prom-ampcost"
+
+  # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
+  repository_config_path = "${path.module}/.helm/repositories.yaml" 
+  repository_cache       = "${path.module}/.helm"
+
+  kubernetes {
+    host                   = module.eks_prom_ampcost.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_prom_ampcost.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks_prom_ampcost.cluster_name]
     }
   }
 }
@@ -73,6 +92,25 @@ provider "helm" {
       api_version = "client.authentication.k8s.io/v1beta1"
       command     = "aws"
       args        = ["eks", "get-token", "--cluster-name", module.eks_prom_amp.cluster_name]
+    }
+  }
+}
+
+provider "helm" {
+  alias = "adot-amp"
+
+  # to avoid issue : https://github.com/hashicorp/terraform-provider-helm/issues/630#issuecomment-996682323
+  repository_config_path = "${path.module}/.helm/repositories.yaml" 
+  repository_cache       = "${path.module}/.helm"
+
+  kubernetes {
+    host                   = module.eks_adot_amp.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks_adot_amp.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks_adot_amp.cluster_name]
     }
   }
 }
@@ -140,6 +178,12 @@ module "prometheus_prom_amp" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
   workspace_alias = format("%s-prom-amp", local.name)
+}
+
+module "prometheus_prom_ampcost" {
+  source = "terraform-aws-modules/managed-service-prometheus/aws"
+
+  workspace_alias = format("%s-prom-ampcost", local.name)
 }
 
 module "prometheus_adot_amp" {
@@ -400,6 +444,160 @@ resource "helm_release" "prom_kubecost" {
   set {
     name  = "clusterName"
     value = module.eks_prom.cluster_name
+  }
+}
+
+## EKS Prom AMPCost
+module "eks_prom_ampcost" {
+  source = "terraform-aws-modules/eks/aws"
+
+  cluster_name = format("%s-prom-ampcost-eks", local.name)
+  cluster_version = "1.28"
+
+  vpc_id                          = module.vpc.vpc_id
+  subnet_ids                      = module.vpc.private_subnets
+  cluster_endpoint_public_access  = true
+
+  enable_cluster_creator_admin_permissions = true
+
+  ## Managed Nodegroups
+  eks_managed_node_groups = {
+    default = {
+      min_size     = 3
+      max_size     = 3
+      desired_size = 3
+
+      instance_types = ["m5.xlarge"]
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+    }
+  }
+
+  ## Addons
+  cluster_addons = {
+    coredns = {
+      addon_version = "v1.10.1-eksbuild.5"
+    }
+    vpc-cni = {
+      addon_version = "v1.14.1-eksbuild.1"
+    }
+    kube-proxy = {
+      addon_version = "v1.28.1-eksbuild.1"
+    }
+    aws-ebs-csi-driver = {
+      addon_version = "v1.25.0-eksbuild.1"
+      service_account_role_arn = module.irsa_prom_ampcost_ebs_csi_plugin.iam_role_arn
+    }
+  }
+
+  ## Node Security Group
+  node_security_group_additional_rules = {
+    ingress_self_all = {
+      description = "Node to node all ports/protocols"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      type        = "ingress"
+      self        = true
+    }
+  }
+}
+
+module "irsa_prom_ampcost_ebs_csi_plugin" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name             = format("%s-irsa-prom-ampcost-ebs-csi-plugin", local.name)
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_prom_ampcost.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa", "kube-system:ebs-csi-node-sa"]
+    }
+  }
+}
+
+## EKS Prom AMPCost / Load Balancer Controller
+module "irsa_prom_ampcost_load_balancer_controller" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                              = format("%s-irsa-prom-ampcost-aws-load-balancer-controller", local.name)
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_prom_ampcost.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
+
+resource "helm_release" "prom_ampcost_aws_load_balancer_controller" {
+  provider = helm.prom-ampcost
+
+  namespace  = "kube-system"
+  name       = "aws-load-balancer-controller"
+  chart      = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  version    = "v1.6.2"
+
+  set {
+    name  = "clusterName"
+    value = module.eks_prom_ampcost.cluster_name
+  }
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_prom_ampcost_load_balancer_controller.iam_role_arn
+  }
+
+  depends_on = [
+    module.irsa_prom_ampcost_load_balancer_controller,
+  ]
+}
+
+## EKS Prom AMPCost / Kubecost 
+module "irsa_prom_ampcost_prometheus" {
+  source = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+
+  role_name                                       = format("%s-prom-ampcost-prometheus", local.name)
+  attach_amazon_managed_service_prometheus_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks_prom_ampcost.oidc_provider_arn
+      namespace_service_accounts = ["kubecost:cost-analyzer-prometheus-server"]
+    }
+  }
+}
+
+resource "helm_release" "prom_ampcost_kubecost" {
+  provider = helm.prom-ampcost
+
+  namespace        = "kubecost"
+  create_namespace = true
+
+  name       = "cost-analyzer"
+  chart      = "cost-analyzer"
+  repository = "https://kubecost.github.io/cost-analyzer"
+  version    = "1.108.0"
+ 
+  values = [
+    templatefile("${path.module}/helm-values/kubecost-prom-ampcost.yaml",
+      {
+        region                    = local.region
+        amp_remote_write_endpoint = format("https://aps-workspaces.%s.amazonaws.com/workspaces/%s/api/v1/remote_write", local.region, module.prometheus_prom_ampcost.workspace_id)
+      }
+    )
+  ]
+
+  set {
+    name  = "clusterName"
+    value = module.eks_prom_ampcost.cluster_name
+  }
+  set {
+    name  = "prometheus.serviceAccounts.server.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.irsa_prom_ampcost_prometheus.iam_role_arn
   }
 }
 

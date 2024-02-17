@@ -1,0 +1,18 @@
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+
+prometheus:
+  serverFiles:
+    prometheus.yml:
+      remote_write: 
+      - url: ${amp_remote_write_endpoint}
+        sigv4:
+          region: ${region}
+        write_relabel_configs:
+        - source_labels: [job]
+          regex: 'kubecost|kubecost-networking'
+          action: keep
