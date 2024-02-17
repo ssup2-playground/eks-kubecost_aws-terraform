@@ -1333,10 +1333,15 @@ scrape_configs:
 EOT
 }
 
-resource "kubectl_manifest" "amp_amp_scrapper_role" {
+data "kubectl_file_documents" "adot_amp_scrapper_role" {
+  content = file("${path.module}/manifests/amp-scrapper-role.yaml")
+}
+
+resource "kubectl_manifest" "adot_amp_scrapper_role" {
   provider = kubectl.amp
 
-  yaml_body = file("${path.module}/manifests/amp-scrapper-role.yaml")
+  for_each = data.kubectl_file_documents.adot_amp_scrapper_role.manifests
+  yaml_body = each.value
 }
 
 resource "helm_release" "amp_node_exporter" {
