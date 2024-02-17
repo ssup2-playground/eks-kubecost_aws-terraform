@@ -987,22 +987,22 @@ module "irsa_adot_amp_adot_collector_amp" {
   }
 }
 
-#data "kubectl_file_documents" "adot_amp_adot_amp" {
-#  content = templatefile("${path.module}/manifests/adot-amp.yaml",
-#    {
-#      region                    = local.region
-#      amp_role_arn              = module.irsa_adot_amp_adot_collector_amp.iam_role_arn
-#      amp_remote_write_endpoint = format("https://aps-workspaces.%s.amazonaws.com/workspaces/%s/api/v1/remote_write", local.region, module.prometheus_adot_amp.workspace_id)
-#    }
-#  )
-#}
+data "kubectl_file_documents" "adot_amp_adot_amp" {
+  content = templatefile("${path.module}/manifests/adot-amp.yaml",
+    {
+      region                    = local.region
+      amp_role_arn              = module.irsa_adot_amp_adot_collector_amp.iam_role_arn
+      amp_remote_write_endpoint = format("https://aps-workspaces.%s.amazonaws.com/workspaces/%s/api/v1/remote_write", local.region, module.prometheus_adot_amp.workspace_id)
+    }
+  )
+}
 
-#resource "kubectl_manifest" "adot_amp_adot_amp" {
-#  provider = kubectl.adot-amp
+resource "kubectl_manifest" "adot_amp_adot_amp" {
+  provider = kubectl.adot-amp
 
-#  for_each = data.kubectl_file_documents.adot_amp_adot_amp.manifests
-#  yaml_body = each.value
-#}
+  for_each = data.kubectl_file_documents.adot_amp_adot_amp.manifests
+  yaml_body = each.value
+}
 
 resource "helm_release" "adot_amp_node_exporter" {
   provider = helm.adot-amp
