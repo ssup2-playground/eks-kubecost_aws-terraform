@@ -180,7 +180,7 @@ module "amp_endpoints_sg" {
   name   = "amp-endpoints"
   vpc_id = module.vpc.vpc_id
 
-  ingress_with_cidr_blocks = [
+  ingress_with_source_security_group_id = [
     {
       description = "eks-prom-ampcost"
       protocol    = "-1"
