@@ -174,6 +174,52 @@ data "aws_ecrpublic_authorization_token" "token" {
 }
 
 ## AMP
+module "amp_endpoints_sg" {
+  source = "terraform-aws-modules/security-group/aws"
+
+  name   = "amp-endpoints"
+  vpc_id = module.vpc.vpc_id
+
+  ingress_with_cidr_blocks = [
+    {
+      description = "eks-prom-ampcost"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      source_security_group_id = module.eks_prom_ampcost.node_security_group_id
+    },
+    {
+      description = "eks-prom-amp"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      source_security_group_id = module.eks_prom_amp.node_security_group_id
+    },
+    {
+      description = "eks-adot-amp"
+      protocol    = "-1"
+      from_port   = 0
+      to_port     = 0
+      source_security_group_id = module.eks_adot_amp.node_security_group_id
+    }
+  ]
+}
+
+module "amp_endpoints" {
+  source = "terraform-aws-modules/vpc/aws//modules/vpc-endpoints"
+
+  vpc_id             = module.vpc.vpc_id
+  security_group_ids = [module.amp_endpoints_sg.security_group_id]
+
+  endpoints = {
+    amp = {
+      service             = "aps-workspaces"
+      private_dns_enabled = true
+      subnet_ids          = module.vpc.private_subnets
+    }
+  }
+}
+
 module "prometheus_prom_amp" {
   source = "terraform-aws-modules/managed-service-prometheus/aws"
 
